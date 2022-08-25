@@ -6,6 +6,7 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
@@ -24,6 +25,7 @@ import net.runelite.client.chat.ChatColorType;
 import net.runelite.client.chat.ChatMessageBuilder;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SpriteManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -42,7 +44,8 @@ public class InvocationScreenshotPlugin extends Plugin
 	private static final int INVOCATION_GROUP_ID = 774;
 	private static final int INVOCATION_TITLE_CHILD_ID = 3;
 	private static final int INVOCATION_CONTAINER_CHILD_ID = 52;
-	private static final int INVOCATION_REWARDS_BUTTON_CHILD_ID = 70;
+	private static final int INVOCATION_REWARDS_CONTAINER_CHILD_ID = 75;
+	private static final int REWARD_BUTTON_SELECTED_VARC = 1086;
 
 	private static final int TOA_PARTY_WIDGET_SCRIPT_ID = 6617;
 
@@ -53,8 +56,6 @@ public class InvocationScreenshotPlugin extends Plugin
 	{
 		CAMERA_IMG = ImageUtil.loadImageResource(InvocationScreenshotPlugin.class, "camera.png");
 	}
-
-	private static final int BUTTON_UNSELECTED_SPRITE_ID = 1040;
 
 	@Inject
 	private Client client;
@@ -70,6 +71,9 @@ public class InvocationScreenshotPlugin extends Plugin
 
 	@Inject
 	private ImageCapture imageCapture;
+
+	@Inject
+	private ItemManager itemManager;
 
 	private Widget button = null;
 
@@ -186,14 +190,6 @@ public class InvocationScreenshotPlugin extends Plugin
 			return;
 		}
 
-		final Widget rewardButton = client.getWidget(INVOCATION_GROUP_ID, INVOCATION_REWARDS_BUTTON_CHILD_ID);
-
-		int width = 287; // Hardcoded width of the interface so that it can be drawn correctly even when on another tab
-		if (rewardButton != null && rewardButton.getDynamicChildren().length > 0 && rewardButton.getDynamicChildren()[0].getSpriteId() == BUTTON_UNSELECTED_SPRITE_ID)
-		{
-			// If the reward button isn't selected then don't use the hardcoded value regardless of the tab that's selected
-			width = container.getWidth();
-		}
 		int height = children[0].getHeight() + children[0].getRelativeY();
 		int y = 0;
 		for (Widget invocation : children)
@@ -205,6 +201,19 @@ public class InvocationScreenshotPlugin extends Plugin
 			}
 		}
 
+		int width = 287; // Hardcoded minimum width of the interface so that it can be drawn correctly even when on another tab
+		boolean rewardButtonSelected = isRewardButtonSelected();
+		if (!rewardButtonSelected)
+		{
+			// If the reward button isn't selected then the correct size can be pulled from the container regardless of the selected tab
+			width = container.getWidth();
+		}
+		else if (config.showRewardsSection())
+		{
+			final Widget rightSideContainer = client.getWidget(INVOCATION_GROUP_ID, 57);
+			assert rightSideContainer != null;
+			width += rightSideContainer.getWidth();
+		}
 		final BufferedImage screenshot = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 		final Graphics graphics = screenshot.getGraphics();
 
@@ -219,9 +228,32 @@ public class InvocationScreenshotPlugin extends Plugin
 			}
 		}
 
-		for (Widget invocation : children)
+		for (final Widget w : children)
 		{
-			drawWidget(graphics, invocation, invocation.getRelativeX(), invocation.getRelativeY());
+			if (w.getType() == WidgetType.RECTANGLE)
+			{
+				continue;
+			}
+
+			drawWidget(graphics, w, w.getRelativeX(), w.getRelativeY());
+		}
+
+		if (rewardButtonSelected && config.showRewardsSection())
+		{
+			final Widget rightSideContainer = client.getWidget(INVOCATION_GROUP_ID, 57);
+			assert rightSideContainer != null;
+			final Widget rewardsContainer = client.getWidget(INVOCATION_GROUP_ID, INVOCATION_REWARDS_CONTAINER_CHILD_ID);
+			if (rewardsContainer != null && rewardsContainer.getStaticChildren().length > 0)
+			{
+				// Move the reward container closer since we don't draw the scrollbar
+				Graphics layer = graphics.create(rightSideContainer.getRelativeX() - 30, rightSideContainer.getRelativeY() - 60, rightSideContainer.getWidth(), rightSideContainer.getHeight());
+				drawWidgets(layer, rewardsContainer.getStaticChildren());
+				layer.dispose();
+			}
+			else
+			{
+				log.warn("Couldn't find the invocation rewards container when it should have existed");
+			}
 		}
 
 		// Convert from ARGB to RGB so it can be stored on the clipboard
@@ -233,6 +265,23 @@ public class InvocationScreenshotPlugin extends Plugin
 			.append("A screenshot of your current invocations was saved and inserted into your clipboard!")
 			.build();
 		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null);
+	}
+
+	private void drawWidgets(Graphics graphics, Widget[] widgets)
+	{
+		for (Widget w : widgets)
+		{
+			if (w.getDynamicChildren().length > 0)
+			{
+				Graphics layer = graphics.create(w.getRelativeX(), w.getRelativeY(), w.getWidth(), w.getHeight());
+				drawWidgets(layer, w.getDynamicChildren());
+				layer.dispose();
+			}
+			else
+			{
+				drawWidget(graphics, w, w.getRelativeX(), w.getRelativeY());
+			}
+		}
 	}
 
 	private void drawWidget(Graphics graphics, Widget child, int x, int y)
@@ -251,14 +300,49 @@ public class InvocationScreenshotPlugin extends Plugin
 			assert sp != null;
 			BufferedImage childImage = sp.toBufferedImage();
 
-			if (width == childImage.getWidth() && height == childImage.getHeight())
+			if (child.getSpriteTiling())
 			{
-				drawAt(graphics, childImage, x, y);
+				Rectangle clips = graphics.getClipBounds();
+				graphics.setClip(x, y, child.getWidth(), child.getHeight());
+
+				for (int dx = x; dx < child.getWidth() + x; dx += sp.getMaxWidth())
+				{
+					for (int dy = y; dy < child.getHeight() + y; dy += sp.getMaxHeight())
+					{
+
+						drawAt(graphics, childImage, dx + sp.getOffsetX(), dy + sp.getOffsetY());
+					}
+				}
+
+				graphics.setClip(clips);
 			}
 			else
 			{
-				drawScaled(graphics, childImage, x, y, width, height);
+				if (width == childImage.getWidth() && height == childImage.getHeight())
+				{
+					drawAt(graphics, childImage, x, y);
+				}
+				else
+				{
+					drawScaled(graphics, childImage, x, y, width, height);
+				}
 			}
+		}
+		else if (child.getItemId() > 0)
+		{
+			BufferedImage image = itemManager.getImage(itemManager.canonicalize(child.getItemId()), 1, false);
+			if (child.getOpacity() > 0)
+			{
+				image = ImageUtil.alphaOffset(image, child.getOpacity() / 255f);
+				// Convert to RGB
+				BufferedImage copy = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
+				Graphics2D g = copy.createGraphics();
+				g.setComposite(AlphaComposite.Src);
+				g.setColor(new Color(0, 0, 0, child.getOpacity()));
+				g.drawImage(image, 0, 0, null);
+				g.dispose();
+			}
+			graphics.drawImage(image, child.getRelativeX(), child.getRelativeY(), null);
 		}
 		else if (child.getType() == WidgetType.TEXT)
 		{
@@ -308,10 +392,16 @@ public class InvocationScreenshotPlugin extends Plugin
 			textLayer.drawString(text, xPos, yPos);
 			textLayer.dispose();
 		}
-		else if (child.getType() == WidgetType.RECTANGLE)
+		else if (child.getType() == WidgetType.RECTANGLE || child.getType() == WidgetType.GRAPHIC)
 		{
-			// Rectangles are purposely not drawn as they are just for helping to layout other components and are not needed.
-			return;
+			Color c = new Color(child.getTextColor());
+			if (child.getOpacity() > 0)
+			{
+				c = new Color(c.getRed(), c.getGreen(), c.getBlue(), child.getOpacity());
+			}
+			graphics.setColor(c);
+			final Rectangle r = child.getBounds();
+			graphics.drawRect(child.getRelativeX(), child.getRelativeY(), r.width, r.height);
 		}
 	}
 
@@ -381,5 +471,10 @@ public class InvocationScreenshotPlugin extends Plugin
 		g.dispose();
 
 		return out;
+	}
+
+	private boolean isRewardButtonSelected()
+	{
+		return client.getVarcIntValue(REWARD_BUTTON_SELECTED_VARC) == 0;
 	}
 }
