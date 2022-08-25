@@ -1,0 +1,2 @@
+# Invocation Screenshot [![Plugin Installs](http://img.shields.io/endpoint?url=https://i.pluginhub.info/shields/installs/plugin/invocation-screenshot)](https://runelite.net/plugin-hub/TheStonedTurtle) [![Plugin Rank](http://img.shields.io/endpoint?url=https://i.pluginhub.info/shields/rank/plugin/invocation-screenshot)](https://runelite.net/plugin-hub)
+Adds a button to capture the ToA Invocation interface
